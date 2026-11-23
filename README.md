@@ -15,6 +15,8 @@ It's a static site with no build step. Every push to `main` deploys to Vercel.
 |---|---|
 | `assets/dino.glb` | The page model, with one looping `idle` clip on a parent node, facing +Z. |
 | `assets/dino-static.glb` | The unanimated original. |
+| `assets/dino-rigged.glb` | Tripo auto-rig, 78 joints, faces +Z. Clips: `idle` 15.4 s, `walk` 2.4 s, `run` 1.3 s, `jump` 2.2 s, `turn` 3.9 s (a half turn, so it doesn't loop). All in place. |
+| `assets/dino-rigged-wave.glb` | Tripo's older humanoid rig, 41 joints. Clips: `wave` 6.6 s, `greet` 3.5 s, `idle_relax` 17.6 s, `cheer` 12.1 s, `jump` 2.2 s. |
 
 The model was generated with Tripo H3.1 (text to 3D), with a light cleanup in Blender. Prompt: "a friendly cartoon baby dinosaur, standing, waving, green with a yellow belly".
 
