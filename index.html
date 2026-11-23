@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hello, dinosaur</title>
+<link rel="stylesheet" href="./style.css">
+<!-- Exact pins. Bump them together, and only after reading the SDK CHANGELOG. -->
+<script type="importmap">
+{ "imports": {
+  "playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.24.0/build/playcanvas.mjs",
+  "@displayxr/inline3d": "https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.56.2/js/inline3d.js",
+  "@displayxr/inline3d/model": "https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.56.2/js/inline3d-model-entry.js"
+} }
+</script>
+</head>
+<body>
+<main class="stage">
+  <canvas id="stage" aria-label="A friendly green dinosaur waving"></canvas>
+  <div id="cover"></div>
+</main>
+<p id="status" hidden>starting…</p>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
