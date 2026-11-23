@@ -23,7 +23,7 @@ async function start() {
     return null;
   });
   statusEl.textContent = wall && wall.supported ? '3D' : '2D';
-  const handle = addModel(wall, canvas, './assets/dino-rigged.glb', {
+  const handle = addModel(wall, canvas, './assets/dino-rigged-wave.glb', {
     frame: dinoFrame(),
     idleSpin: 0,          // he faces the viewer and waves
     orbit: true,          // a drag still turns him
@@ -42,6 +42,7 @@ async function start() {
   if (wall && typeof wall.close === 'function') addEventListener('pagehide', () => wall.close());
   handle.ready.then(startAnimation).catch((err) => console.warn('animation not started', err));
   handle.ready.then(addBackdrop).catch((err) => console.warn('backdrop not added', err));
+  handle.ready.then(startRelax).catch((err) => console.warn('relax not wired', err));
   await Promise.race([handle.firstWoven, new Promise((r) => setTimeout(r, 4000))]);
   dropCover();
 }
@@ -128,42 +129,101 @@ async function addBackdrop(h) {
   rn.addChild(e);
 }
 
-// dino-rigged.glb is skinned (Tripo biped rig, 78 joints) and carries the clips idle, walk, run,
-// jump and turn, all in place. addModel loads them but plays none, so an anim component on the model
-// root (the skeleton lives under it) drives them: `idle` loops, and every pinch RELEASE plays `jump`
-// once and blends back. A child turning the dinosaur gets a little hop each time they let go.
+// Slow relax home after a DRAG RELEASE (mouse or pinch), so the dinosaur can't be parked turned
+// away or upside down. While dragging he turns freely (addModel's turntable: cumulative, no cap);
+// on release the viewer's own orbit easing is pointed back at his starting pose with a slow time
+// constant. Grabbing him again mid-relax simply takes over (a drag rewrites the target). Zoom is
+// left alone. Uses the PlayCanvas viewer's orbit state (_targetYaw/_targetPitch/_orbitMode, the
+// same fields its 'tilt' style relaxes with) because the turntable style has no public relax.
+const RELAX_TAU_S = 1.5; // ~95% home in 4.5 s
+let relaxHome = null;
+function startRelax(h) {
+  const v = h.viewer;
+  if (!v || !('_targetYaw' in v)) return;
+  const restYaw = v._targetYaw, restPitch = v._targetPitch;
+  relaxHome = () => {
+    // Shortest way round: unwrap the current yaw (degrees) to within half a turn of rest, so he
+    // never spins back through every full turn the child gave him.
+    v._yaw -= Math.round((v._yaw - restYaw) / 360) * 360;
+    v._targetYaw = restYaw;
+    v._targetPitch = restPitch;
+    if ('_targetRoll' in v) v._targetRoll = 0;
+    v.orbitEase.rest = RELAX_TAU_S;
+    v._orbitMode = 'rest';
+  };
+  let dragged = false;
+  canvas.addEventListener('pointermove', (ev) => { if (ev.buttons) dragged = true; });
+  const onUp = () => {
+    if (!dragged) return; // a click is not a drag
+    dragged = false;
+    setTimeout(relaxHome, 0); // after the SDK's own pointerup (its turntable just stops)
+  };
+  canvas.addEventListener('pointerup', onUp);
+  canvas.addEventListener('pointercancel', onUp);
+}
+
+// dino-rigged-wave.glb is skinned (Tripo humanoid rig, 41 joints) with the clips wave, greet,
+// idle_relax, cheer and jump, all in place. (dino-rigged.glb, the 78-joint biped, has no wave and its
+// idle drives the right paw into the belly.) addModel loads the clips but plays none, so an anim
+// component on the model root (the skeleton lives under it) drives them:
+//   - he WAVES hi once he is on screen, and again whenever a hand first appears to the tracker;
+//   - otherwise `idle_relax` loops;
+//   - every pinch RELEASE plays `jump` once (a little hop each time the child lets go).
+// One-shots blend back to the idle. ?clip=<name> loops one clip, for checking it on the panel.
 // PlayCanvas path only (the three fallback stays still). Reduced-motion viewers get the still pose.
-const BLEND_S = 0.25;
+const BLEND_S = 0.3;
+const IDLE = 'idle_relax', GREET = 'wave', HOP = 'jump';
 function startAnimation(h) {
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
   const clips = (h.container && h.container.animations) || [];
   if (!h.model || !clips.length || typeof h.model.addComponent !== 'function') return;
   const tracks = Object.fromEntries(clips.map((a) => [a.resource.name, a.resource]));
-  if (!tracks.idle) { console.warn('dino: no idle clip in', Object.keys(tracks)); return; }
+  const solo = new URLSearchParams(location.search).get('clip');
+  const idle = tracks[solo] ? solo : tracks[IDLE] ? IDLE : Object.keys(tracks)[0];
   h.model.addComponent('anim', { activate: true });
   const anim = h.model.anim;
-  anim.assignAnimation('idle', tracks.idle, undefined, 1, true);
-  if (tracks.jump) anim.assignAnimation('jump', tracks.jump, undefined, 1, false);
-  anim.baseLayer.play('idle');
+  for (const [name, t] of Object.entries(tracks)) anim.assignAnimation(name, t, undefined, 1, name === idle);
+  anim.baseLayer.play(idle);
+  if (solo) return;
 
-  let jumpUntil = 0;
-  const jump = () => {
-    if (!tracks.jump || performance.now() < jumpUntil) return; // let a hop finish
-    anim.baseLayer.transition('jump', BLEND_S);
-    jumpUntil = performance.now() + tracks.jump.duration * 1000;
-    setTimeout(() => anim.baseLayer.transition('idle', BLEND_S), (tracks.jump.duration - BLEND_S) * 1000);
+  // One-shot: blend in, play once, blend back to the idle. Ignored while another is playing.
+  let busyUntil = 0;
+  const once = (name) => {
+    const t = tracks[name];
+    if (!t || performance.now() < busyUntil) return;
+    anim.baseLayer.transition(name, BLEND_S);
+    busyUntil = performance.now() + t.duration * 1000;
+    setTimeout(() => anim.baseLayer.transition(idle, BLEND_S), Math.max(0, t.duration - BLEND_S) * 1000);
   };
-  window.dinoJump = jump; // console / debug handle
+  window.dinoPlay = once; // console / debug handle
+  setTimeout(() => once(GREET), 1200); // hi! once the cover is off
 
-  // Pinch release (either hand) -> jump. Polled per frame; inert without a hand provider.
+  // Hands: a hand appearing -> wave; pinch release (either hand) -> hop + relax home.
+  // Polled per frame; inert without a hand provider.
   const wasPinched = [false, false];
+  let hadHands = false;
+  let lastGreet = performance.now(); // the load greeting counts
+  const GREET_COOLDOWN_MS = 15000;   // a flickering hand doesn't make him wave non-stop
   const tick = () => {
-    const c = h.hands && h.hands.controller;
+    const hs = h.hands;
+    const c = hs && hs.controller;
+    let n = 0;
+    try { n = (hs && hs.state && hs.state.hands) | 0; } catch {}
+    if (n > 0 && !hadHands && performance.now() - lastGreet > GREET_COOLDOWN_MS) {
+      lastGreet = performance.now();
+      once(GREET);
+    }
+    hadHands = n > 0;
     if (c) {
       for (const i of [0, 1]) {
         let p = false;
         try { p = !!c.pinched(i); } catch {}
-        if (wasPinched[i] && !p) jump();
+        if (wasPinched[i] && !p) {
+          once(HOP);
+          let other = false;
+          try { other = !!c.pinched(1 - i); } catch {}
+          if (relaxHome && !other) relaxHome(); // the last pinch let go: relax home
+        }
         wasPinched[i] = p;
       }
     }
