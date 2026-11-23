@@ -1,0 +1,6 @@
+{
+  "name": "hello-dino",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" }
+}

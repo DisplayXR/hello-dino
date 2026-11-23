@@ -2,6 +2,21 @@
 // The dinosaur was generated for DisplayXR (Tripo H3.1 through Runway, November 22, 2026).
 import { createInline3D } from '@displayxr/inline3d';
 import { addModel } from '@displayxr/inline3d/model';
+import { createVoice } from './voice.js';
+
+// Talk to Dino (voice.js): one button; tap to start a conversation, tap again to end it.
+const talkBtn = document.getElementById('talk');
+const TALK_LABEL = { idle: 'Talk to Dino', connecting: 'Waking Dino up…', listening: 'Dino is listening…', hearing: 'Dino is listening…', thinking: 'Dino is thinking…', speaking: 'Dino is talking…', error: 'Try again' };
+const voice = createVoice({
+  onAnimate: (clip) => dinoPlay && dinoPlay(clip),
+  onState: (s, detail) => {
+    if (!talkBtn) return;
+    talkBtn.dataset.state = s;
+    talkBtn.querySelector('span').textContent = TALK_LABEL[s] || TALK_LABEL.idle;
+    if (detail) console.warn('dino voice:', detail);
+  },
+});
+talkBtn && talkBtn.addEventListener('click', () => (voice.active ? voice.stop() : voice.start()));
 
 const canvas = document.getElementById('stage');
 const cover = document.getElementById('cover');
@@ -172,6 +187,58 @@ function startRelax(h) {
 // One-shots blend back to the idle. ?clip=<name> loops one clip, for checking it on the panel.
 // PlayCanvas path only (the three fallback stays still). Reduced-motion viewers get the still pose.
 const BLEND_S = 0.3;
+let dinoPlay = null;   // set once the rig is up; the voice's animate tool calls it
+
+// Per-frame pose fixes, applied AFTER the clip has posed the skeleton (PlayCanvas fires the app's
+// 'update' event after the anim system), so they hold for every clip:
+//  1. Arms out. Tripo's clips keep the short arms tight to the body and the paws sink into the
+//     belly. Each upper arm is turned outward, away from the body's centre line, by ARM_OUT_DEG
+//     (about the axis perpendicular to the arm and the outward direction, in world space).
+//     ?armout=<deg> tunes it on the panel.
+//  2. Talking head-bob. While Dino's voice plays, the head nods and tilts a little with its
+//     loudness (voice.level(), 0..1).
+const ARM_OUT_DEG = 15;
+async function startPoseFix(h) {
+  const pc = await import('playcanvas');
+  const app = h.viewer && h.viewer.app;
+  if (!app) return;
+  const q = new URLSearchParams(location.search);
+  const armDeg = Number.isFinite(parseFloat(q.get('armout'))) ? parseFloat(q.get('armout')) : ARM_OUT_DEG;
+  const find = (n) => h.model.findByName(n);
+  const arms = [['L_Upperarm', 'L_Hand'], ['R_Upperarm', 'R_Hand']].map(([a, hand]) => [find(a), find(hand)]).filter(([a, b]) => a && b);
+  const head = find('Head');
+  const spine = find('Spine02') || find('Spine01');
+  const rot = new pc.Quat(), inv = new pc.Quat(), world = new pc.Quat(), axis = new pc.Vec3(), dir = new pc.Vec3(), out = new pc.Vec3();
+  let bob = 0;
+  app.on('update', (dt) => {
+    // 1. arms out
+    if (armDeg && spine) {
+      const mid = spine.getPosition();
+      for (const [arm, hand] of arms) {
+        const s = arm.getPosition();
+        dir.sub2(hand.getPosition(), s).normalize();              // shoulder -> paw
+        out.set(Math.sign(s.x - mid.x) || 1, 0, 0);              // away from the centre line (model faces +z)
+        axis.cross(dir, out);
+        if (axis.lengthSq() < 1e-8) continue;
+        axis.normalize();
+        rot.setFromAxisAngle(axis, armDeg);
+        world.mul2(rot, arm.getRotation());                       // turn in world space ...
+        inv.copy(arm.parent.getRotation()).invert();
+        arm.setLocalRotation(inv.mul(world));                     // ... written back as local
+      }
+    }
+    // 2. head-bob while talking
+    if (head && voice) {
+      const lv = voice.level();
+      bob += (lv - bob) * Math.min(1, dt * 12);
+      if (bob > 0.02) {
+        const t = performance.now() / 1000;
+        rot.setFromEulerAngles(bob * 9 * Math.sin(t * 9), 0, bob * 4 * Math.sin(t * 5.3));
+        head.setLocalRotation(head.getLocalRotation().clone().mul(rot));
+      }
+    }
+  });
+}
 const IDLE = 'idle_relax', GREET = 'wave', HOP = 'jump';
 function startAnimation(h) {
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
@@ -196,7 +263,9 @@ function startAnimation(h) {
     setTimeout(() => anim.baseLayer.transition(idle, BLEND_S), Math.max(0, t.duration - BLEND_S) * 1000);
   };
   window.dinoPlay = once; // console / debug handle
+  dinoPlay = once;        // the voice's animate tool
   setTimeout(() => once(GREET), 1200); // hi! once the cover is off
+  startPoseFix(h);
 
   // Hands: a hand appearing -> wave; pinch release (either hand) -> hop + relax home.
   // Polled per frame; inert without a hand provider.

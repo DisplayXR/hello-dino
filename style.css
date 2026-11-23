@@ -13,3 +13,15 @@ html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
 #debug { position: fixed; top: 8px; left: 8px; padding: 3px 9px; border-radius: 999px;
   background: rgba(20, 30, 26, 0.72); color: #fff; font: 12px/1.4 ui-monospace, Menlo, monospace;
   pointer-events: none; z-index: 10; }
+
+/* Talk to Dino: one big friendly button, bottom centre, off the dinosaur. */
+#talk { position: absolute; left: 50%; bottom: 4vh; transform: translateX(-50%); z-index: 5;
+  display: flex; align-items: center; gap: 12px; padding: 14px 28px 14px 20px; border: 0; border-radius: 999px;
+  background: rgba(255, 255, 255, 0.88); color: #24452f; font: 600 22px/1 ui-rounded, "Segoe UI", system-ui, sans-serif;
+  box-shadow: 0 6px 20px rgba(20, 50, 30, 0.25); cursor: pointer; }
+#talk i { width: 22px; height: 22px; border-radius: 50%; background: #5bb46a; flex: none; }
+#talk[data-state="listening"] i, #talk[data-state="hearing"] i { animation: talk-pulse 1.2s ease-in-out infinite; }
+#talk[data-state="speaking"] i { background: #f0a43a; animation: talk-pulse 0.5s ease-in-out infinite; }
+#talk[data-state="thinking"] i, #talk[data-state="connecting"] i { background: #9bb7a3; }
+#talk[data-state="error"] i { background: #d9604c; }
+@keyframes talk-pulse { 50% { transform: scale(1.35); opacity: 0.7; } }
