@@ -6,7 +6,13 @@
 // model's `animate` tool calls (wave / jump / greet), which drive the rig through `onAnimate`.
 // `level()` is Dino's live voice loudness (0..1), for the talking head-bob.
 
+// Per-conversation limits (the page side; the server and the OpenAI project budget are the hard ones).
+const MAX_SESSION_MS = 4 * 60 * 1000; // a conversation ends after 4 minutes
+const IDLE_HANGUP_MS = 45 * 1000;     // ... or after 45 s with nobody talking
+
 export function createVoice({ onAnimate, onState }) {
+  let capTimer = null, idleTimer = null;
+  const bumpIdle = () => { clearTimeout(idleTimer); idleTimer = setTimeout(() => stop('idle'), IDLE_HANGUP_MS); };
   let pc = null, dc = null, mic = null, audioEl = null, analyser = null, buf = null;
   const state = (s, detail) => onState && onState(s, detail);
 
@@ -38,6 +44,8 @@ export function createVoice({ onAnimate, onState }) {
       dc.onmessage = (m) => handleEvent(JSON.parse(m.data));
       dc.onopen = () => {
         state('listening');
+        capTimer = setTimeout(() => stop('time'), MAX_SESSION_MS);
+        bumpIdle();
         // Dino speaks first: hi + the child's name.
         dc.send(JSON.stringify({ type: 'response.create' }));
       };
@@ -59,6 +67,7 @@ export function createVoice({ onAnimate, onState }) {
   }
 
   function handleEvent(ev) {
+    if (ev.type === 'input_audio_buffer.speech_started' || ev.type === 'output_audio_buffer.started' || ev.type === 'output_audio_buffer.stopped') bumpIdle();
     switch (ev.type) {
       case 'input_audio_buffer.speech_started': state('hearing'); break;
       case 'response.created': state('thinking'); break;
@@ -80,7 +89,9 @@ export function createVoice({ onAnimate, onState }) {
     }
   }
 
-  function stop() {
+  function stop(why) {
+    clearTimeout(capTimer); clearTimeout(idleTimer);
+    if (why) console.info('dino voice: hung up (' + why + ')');
     try { dc && dc.close(); } catch {}
     try { pc && pc.close(); } catch {}
     try { mic && mic.getTracks().forEach((t) => t.stop()); } catch {}

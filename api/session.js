@@ -3,7 +3,9 @@
 // The real key (OPENAI_API_KEY, a Sensitive Vercel env var) never leaves this function. The page
 // gets an ephemeral `ek_...` token that only opens ONE realtime session, expires in 60 s if unused,
 // and carries the persona, voice and tools fixed here, so a visitor cannot repurpose it.
-// Guards: POST only, same-site Origin, a small per-IP budget (best effort: per warm instance).
+// Guards: POST only, same-site Origin, a small per-IP budget (best effort: per warm instance),
+// DINO_VOICE=off kill switch, 300 output tokens per reply. The page also hangs up after 4 min or
+// 45 s of silence. The hard ceiling is the OpenAI project's own monthly budget: set one.
 //
 // Local panel testing: tools/dev_server.py serves the page and this same endpoint on localhost.
 
@@ -36,7 +38,7 @@ export const TOOLS = [
 ];
 
 const ALLOWED_HOSTS = [/^hello-dino-2612(-[a-z0-9-]+)?\.vercel\.app$/, /^localhost(:\d+)?$/, /^127\.0\.0\.1(:\d+)?$/];
-const BUDGET = { windowMs: 10 * 60 * 1000, max: 30 }; // per IP, per warm instance
+const BUDGET = { windowMs: 10 * 60 * 1000, max: 8 }; // per IP, per warm instance (best effort)
 const hits = new Map();
 
 function originAllowed(req) {
@@ -81,6 +83,8 @@ export function sessionConfig() {
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' });
+  // Kill switch: set DINO_VOICE=off in the Vercel project to turn voice off (e.g. after the shoot).
+  if (String(process.env.DINO_VOICE || '').toLowerCase() === 'off') return res.status(503).json({ error: 'Dino is napping (voice is off)' });
   if (!originAllowed(req)) return res.status(403).json({ error: 'origin not allowed' });
   const ip = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || 'unknown';
   if (overBudget(ip)) return res.status(429).json({ error: 'too many sessions, try again in a few minutes' });
