@@ -7,6 +7,8 @@ const canvas = document.getElementById('stage');
 const cover = document.getElementById('cover');
 const statusEl = document.getElementById('status');
 
+const MARGIN = 0.82; // the model's height as a fraction of the canvas height (addModel `margin`)
+
 let coverDone = false;
 function dropCover() {
   if (coverDone) return;
@@ -21,12 +23,13 @@ async function start() {
     return null;
   });
   statusEl.textContent = wall && wall.supported ? '3D' : '2D';
-  const handle = addModel(wall, canvas, './assets/dino.glb', {
+  const handle = addModel(wall, canvas, './assets/dino-rigged.glb', {
     frame: dinoFrame(),
     idleSpin: 0,          // he faces the viewer and waves
     orbit: true,          // a drag still turns him
-    margin: 0.82,
-    clearColor: '#dfe9e4', // opaque, matches the page behind the canvas
+    margin: MARGIN,
+    // No clearColor (transparent): the 3D meadow backdrop (addBackdrop) covers the canvas; the
+    // CSS meadow behind it only shows during load and in 2D.
     environment: 'neutral',
     zoom: { min: 0.85, max: 1.25 },
     hands: {
@@ -37,7 +40,8 @@ async function start() {
   });
   if (new URLSearchParams(location.search).has('debug')) startDebug(handle);
   if (wall && typeof wall.close === 'function') addEventListener('pagehide', () => wall.close());
-  handle.ready.then(playIdle).catch((err) => console.warn('idle animation not started', err));
+  handle.ready.then(startAnimation).catch((err) => console.warn('animation not started', err));
+  handle.ready.then(addBackdrop).catch((err) => console.warn('backdrop not added', err));
   await Promise.race([handle.firstWoven, new Promise((r) => setTimeout(r, 4000))]);
   dropCover();
 }
@@ -45,12 +49,13 @@ async function start() {
 // Where the screen plane (zero disparity) sits in the dinosaur. addModel puts the CENTRE of the
 // framing box on the glass (the model viewer's rule). This mesh is front-heavy: the thin tail
 // reaches far back, so the box centre is behind the body and 65% of the surface pops out (snout
-// ~+0.48 m in a 0.98 m deep box). Same box size (so the 80% fit is unchanged), but its centre is
-// moved forward in z to the mesh's 75th-percentile depth: ~25% of the surface in front of the
-// glass, the stereographer screen-plane rule. Measured from dino.glb (glTF +z = toward viewer).
-// ?zdp=box restores the SDK default, ?zdp=median puts the middle vertex on the glass.
-const DINO_BOX = { center: [0.012, 0.0, -0.006], extent: [0.719, 1.0, 0.975] };
-const DINO_ZDP_Z = { box: -0.006, median: 0.094, p75: 0.207 };
+// ~+0.48 m in a 0.97 m deep box). Same box size (so the 80% fit is unchanged), but its centre is
+// moved forward in z to the surface's area-weighted 75th-percentile depth: ~25% of the surface in
+// front of the glass (DisplayXR/displayxr-web#327). Measured from dino-rigged.glb in its bind pose
+// (feet at y = 0, glTF +z = toward the viewer). ?zdp=box restores the SDK default, ?zdp=median
+// puts the middle of the surface on the glass.
+const DINO_BOX = { center: [0.0, 0.5, 0.0], extent: [0.72, 1.0, 0.968] };
+const DINO_ZDP_Z = { box: 0.0, median: 0.1, p75: 0.222 };
 function dinoFrame() {
   const pick = new URLSearchParams(location.search).get('zdp');
   const z = pick in DINO_ZDP_Z ? DINO_ZDP_Z[pick] : DINO_ZDP_Z.p75;
@@ -80,16 +85,91 @@ function startDebug(h) {
   }, 250);
 }
 
-// The GLB carries one looping clip, "idle" (5 s: breathing bob, a small sway, one hop), keyed on
-// the parent node. addModel loads it but does not play it, so attach an anim component (PlayCanvas
-// path only; the three fallback stays still). Reduced-motion viewers get the still pose.
-function playIdle(h) {
+// The meadow is a 3D backdrop, not a CSS layer: a flat page layer sits AT the screen plane and cuts
+// the tail, which is behind it. An unlit textured plane placed behind the
+// dinosaur, in the camera rig's frame (see below) so it never turns with him. Depth: the farthest
+// point from the turn pivot is the tail,
+// 0.71 model heights; the model is 0.82 vH tall, so 0.58 vH, x 1.25 max zoom = 0.72 vH at any turn.
+// BACKDROP_Z_VH = 0.8 (~15 cm behind the glass on the 15.6" panel) keeps clear of every pose. The
+// image is pre-blurred, so the lens's softening of rear content costs nothing. Size: covers the
+// canvas at that depth, plus head-motion parallax, at the image's 3:2.
+const BACKDROP_Z_VH = 0.8;      // behind the screen, in virtual-display heights
+const BACKDROP_H_VH = 2.2;      // plane height, in virtual-display heights (3:2 image)
+async function addBackdrop(h) {
+  const v = h.viewer;
+  const app = v && v.app;
+  if (!app || !h.model) return;
+  const pc = await import('playcanvas');
+  // The SDK keeps the model still and moves a camera RIG around it: `viewer.rigNode` sits at the
+  // framing centre, scaled 1/fit, and its LOCAL frame is the display frame (screen at the origin,
+  // virtualDisplayHeight tall, +z toward the viewer). Parent the backdrop to it in those local
+  // units: it then stays put on the screen while a pinch orbits the camera round the dinosaur.
+  const rn = v.rigNode;
+  const vH = v.vH || 0.24;
+  const tex = await new Promise((resolve, reject) => {
+    app.assets.loadFromUrl('./assets/bg-meadow.jpg', 'texture', (err, asset) => (err ? reject(err) : resolve(asset.resource)));
+  });
+  const mat = new pc.StandardMaterial();
+  mat.useLighting = false;
+  mat.diffuse = new pc.Color(0, 0, 0);
+  mat.emissive = new pc.Color(1, 1, 1);
+  mat.emissiveMap = tex;
+  mat.useFog = false;
+  mat.useSkybox = false;
+  mat.update();
+  const e = new pc.Entity('meadow-backdrop');
+  e.addComponent('render', { type: 'plane', material: mat, castShadows: false, receiveShadows: false });
+  const hgt = BACKDROP_H_VH * vH;
+  e.setLocalScale(hgt * 1.5, 1, hgt);          // pc plane is 1x1 in XZ
+  e.setLocalEulerAngles(90, 0, 0);            // face +z (toward the viewer)
+  // ?bdz=<vH> tunes the depth by eye on the panel (e.g. 0.6 shallower, 1.0 deeper).
+  const bdz = parseFloat(new URLSearchParams(location.search).get('bdz'));
+  e.setLocalPosition(0, 0, -(Number.isFinite(bdz) && bdz > 0 ? bdz : BACKDROP_Z_VH) * vH);
+  rn.addChild(e);
+}
+
+// dino-rigged.glb is skinned (Tripo biped rig, 78 joints) and carries the clips idle, walk, run,
+// jump and turn, all in place. addModel loads them but plays none, so an anim component on the model
+// root (the skeleton lives under it) drives them: `idle` loops, and every pinch RELEASE plays `jump`
+// once and blends back. A child turning the dinosaur gets a little hop each time they let go.
+// PlayCanvas path only (the three fallback stays still). Reduced-motion viewers get the still pose.
+const BLEND_S = 0.25;
+function startAnimation(h) {
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-  const clip = h.container && h.container.animations && h.container.animations[0];
-  if (!h.model || !clip || typeof h.model.addComponent !== 'function') return;
-  const track = clip.resource;
+  const clips = (h.container && h.container.animations) || [];
+  if (!h.model || !clips.length || typeof h.model.addComponent !== 'function') return;
+  const tracks = Object.fromEntries(clips.map((a) => [a.resource.name, a.resource]));
+  if (!tracks.idle) { console.warn('dino: no idle clip in', Object.keys(tracks)); return; }
   h.model.addComponent('anim', { activate: true });
-  h.model.anim.assignAnimation(track.name, track); // loops by default
+  const anim = h.model.anim;
+  anim.assignAnimation('idle', tracks.idle, undefined, 1, true);
+  if (tracks.jump) anim.assignAnimation('jump', tracks.jump, undefined, 1, false);
+  anim.baseLayer.play('idle');
+
+  let jumpUntil = 0;
+  const jump = () => {
+    if (!tracks.jump || performance.now() < jumpUntil) return; // let a hop finish
+    anim.baseLayer.transition('jump', BLEND_S);
+    jumpUntil = performance.now() + tracks.jump.duration * 1000;
+    setTimeout(() => anim.baseLayer.transition('idle', BLEND_S), (tracks.jump.duration - BLEND_S) * 1000);
+  };
+  window.dinoJump = jump; // console / debug handle
+
+  // Pinch release (either hand) -> jump. Polled per frame; inert without a hand provider.
+  const wasPinched = [false, false];
+  const tick = () => {
+    const c = h.hands && h.hands.controller;
+    if (c) {
+      for (const i of [0, 1]) {
+        let p = false;
+        try { p = !!c.pinched(i); } catch {}
+        if (wasPinched[i] && !p) jump();
+        wasPinched[i] = p;
+      }
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
 }
 
 start().catch((err) => {
